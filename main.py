@@ -1,9 +1,47 @@
-from flask import Flask
+from flask import Flask,  Response, render_template_string
 import folium
 from folium.plugins import HeatMap
 import psycopg2
+import pandas as pd
+import matplotlib.pyplot as plt
+import threading
+from io import BytesIO
+import base64
 
 app = Flask(__name__)
+
+def gerar_grafico():
+    conn = psycopg2.connect( 
+        host="ep-red-glitter-adx9s4na-pooler.c-2.us-east-1.aws.neon.tech",
+        dbname="neondb",
+        user="neondb_owner",
+        password="npg_8jbKOq2MDZvT",
+        sslmode="require"
+    )
+    cursor = conn.cursor()
+    cursor.execute('SELECT DEVICE FROM access;')
+    rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+
+    df = pd.DataFrame(rows, columns=['DEVICE'])
+    contagem = df['DEVICE'].value_counts()
+
+    plt.figure(figsize=(10,6))
+    contagem.plot(kind='bar', color='skyblue')
+    plt.title('Quantidade de acessos por DEVICE')
+    plt.xlabel('DEVICE')
+    plt.ylabel('Quantidade')
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    
+    img = BytesIO()
+    plt.savefig(img, format='png')
+    plt.close()
+    img.seek(0)
+    # codifica em base64 para inserir no HTML
+    img_base64 = base64.b64encode(img.getvalue()).decode()
+    return img_base64
 
 def gerar_mapa():
     conn = psycopg2.connect(
@@ -22,13 +60,9 @@ def gerar_mapa():
     rows = cursor.fetchall()
     conn.close()
 
-    # pega o maior valor para normalizar (evita que 1 já fique vermelho)
     max_qtd = max((qtd for _, _, qtd in rows), default=1)
-
-    # normaliza os valores de 0 a 1
     dados = [[lat, lon, qtd / max_qtd] for lat, lon, qtd in rows]
 
-    # centraliza o mapa nos pontos coletados
     if rows:
         latitudes = [lat for lat, _, _ in rows]
         longitudes = [lon for _, lon, _ in rows]
@@ -38,20 +72,36 @@ def gerar_mapa():
         mapa = folium.Map(zoom_start=2)
 
     HeatMap(
-    dados,
-    radius=24,
-    blur=20,
-    min_opacity=0.5,
-    gradient={0: 'blue', 0.5: 'lime', 0.7: 'yellow', 1: 'red'},
-    max_zoom=18,
-    max_val=50   # 🔥 fixa a escala até 50 pessoas
+        dados,
+        radius=24,
+        blur=20,
+        min_opacity=0.5,
+        gradient={0: 'blue', 0.5: 'lime', 0.7: 'yellow', 1: 'red'},
+        max_zoom=18,
+        max_val=50   
     ).add_to(mapa)
 
-    return mapa._repr_html_()  # retorna o HTML direto
+    return mapa._repr_html_() 
+
+@app.route("/DeviceGrafico")
+def device_grafico():
+    img_base64 = gerar_grafico()
+    html = f"""
+    <html>
+        <head><title>Gráfico de Dispositivos</title></head>
+        <body>
+            <h1>Gráfico de Devices</h1>
+            <img src="data:image/png;base64,{img_base64}" />
+        </body>
+    </html>
+    """
+    return html
 
 @app.route("/mapa")
 def mapa():
     return gerar_mapa()
 
 if __name__ == "__main__":
+    # roda o gráfico em uma thread separada
+    threading.Thread(target=gerar_grafico).start()
     app.run(debug=True)
